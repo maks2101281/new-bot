@@ -2292,12 +2292,13 @@ if __name__ == "__main__":
         # Определяем режим запуска
         if mode == 'webhook':
             # Режим webhook - для запуска на сервере
+            from flask import Flask, request
+            app = Flask(__name__)
             
-            # Получаем параметры из переменных окружения
             WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '')
             WEBHOOK_PORT = int(os.environ.get('PORT', 5000))
+            WEBHOOK_PATH = os.environ.get('WEBHOOK_PATH', f'/webhook/{bot.token}')
             
-            # Для Render используем переменную окружения RENDER_EXTERNAL_URL
             if os.environ.get('RENDER_EXTERNAL_URL'):
                 WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL') + WEBHOOK_PATH
                 logger.info(f"Используем URL Render: {WEBHOOK_URL}")
@@ -2326,7 +2327,6 @@ if __name__ == "__main__":
             # Режим webhook - для хостинга
             import flask
             from flask import Flask, request
-            
             app = Flask(__name__)
             
             # URL для webhook должен соответствовать URL вашего приложения
