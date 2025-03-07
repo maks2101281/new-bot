@@ -2248,6 +2248,22 @@ def handle_user_state(message):
         logger.error(f"Ошибка в handle_user_state: {e}")
         bot.send_message(message.chat.id, "Произошла ошибка при обработке вашего сообщения.")
 
+# Обработчик сигналов для корректного завершения бота
+def signal_handler(signal, frame):
+    logger.info("Получен сигнал прерывания, завершаю работу...")
+    try:
+        # Удаляем вебхук при выходе
+        bot.remove_webhook()
+        logger.info("Вебхук удален")
+    except Exception as e:
+        logger.error(f"Ошибка при удалении вебхука: {e}")
+    
+    # Выход из программы
+    sys.exit(0)
+
+# Регистрация обработчика сигналов
+signal.signal(signal.SIGINT, signal_handler)
+
 if __name__ == "__main__":
     try:
         # Инициализируем БД
