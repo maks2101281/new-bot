@@ -1674,9 +1674,11 @@ init_db()
 def global_error_handler(bot_instance, update):
     """Глобальный обработчик всех типов сообщений"""
     try:
-        # Для callback_query добавляем дополнительную обработку
-        if update.callback_query:
+        # Проверяем тип объекта update перед доступом к его атрибутам
+        if hasattr(update, 'callback_query') and update.callback_query:
             logger.info(f"Обрабатываем callback_query: {update.callback_query.data} от пользователя {update.callback_query.from_user.id}")
+        elif hasattr(update, 'message') and update.message:
+            logger.info(f"Обрабатываем сообщение типа: {update.message.content_type} от пользователя {update.message.from_user.id}")
             
         return update
     except Exception as e:
@@ -2525,11 +2527,13 @@ if __name__ == "__main__":
                             logger.info(f"Получен callback_query с data: {update.callback_query.data}")
                         elif hasattr(update, 'message') and update.message:
                             logger.info(f"Получено сообщение типа: {update.message.content_type}")
+                        else:
+                            logger.info(f"Получен другой тип обновления: {type(update).__name__}")
                         
                         # Безопасная обработка обновлений
                         try:
                             bot.process_new_updates([update])
-                            logger.info(f"Обработано обновление типа: {update.message.content_type if hasattr(update, 'message') and update.message else 'не сообщение'}")
+                            logger.info(f"Обновление успешно обработано")
                         except Exception as e:
                             logger.error(f"Ошибка при обработке обновления: {e}")
                             # Восстанавливаем middleware после ошибки
