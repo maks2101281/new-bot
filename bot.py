@@ -1672,27 +1672,56 @@ init_db()
 # Добавляем обработчик ошибок Telegram API
 @bot.middleware_handler(update_types=['message', 'callback_query', 'inline_query'])
 def global_error_handler(bot_instance, update):
+    """Глобальный обработчик всех типов сообщений"""
     try:
-        # Пропускаем обработку, это middleware
-        pass
+        # Для callback_query добавляем дополнительную обработку
+        if update.callback_query:
+            logger.info(f"Обрабатываем callback_query: {update.callback_query.data} от пользователя {update.callback_query.from_user.id}")
+            
+        return update
     except Exception as e:
-        logger.error(f"Неперехваченная ошибка в middleware: {e}", exc_info=True)
-        # Не позволяем ошибке остановить бота
-        return True
+        logger.error(f"Ошибка в middleware: {e}")
+        # Продолжаем обработку, чтобы не блокировать запросы
+        return update
 
 # Переопределяем метод обработки исключений
 old_process_new_updates = bot.process_new_updates
 
 def safe_process_new_updates(updates):
+    """Безопасная обработка обновлений с обработкой ошибок"""
     try:
         old_process_new_updates(updates)
+        return True
     except Exception as e:
-        logger.error(f"Критическая ошибка при обработке обновлений: {e}", exc_info=True)
+        error_details = traceback.format_exc()
+        logger.error(f"Критическая ошибка при обработке обновлений: {e}\n{error_details}", exc_info=True)
+        
         # Отправляем уведомление администратору о критической ошибке
         try:
             bot.send_message(ADMIN_ID, f"⚠️ Критическая ошибка в боте:\n{str(e)[:200]}...")
+            
+            # Если это callback_query, пытаемся отправить уведомление пользователю о проблеме
+            for update in updates:
+                if hasattr(update, 'callback_query') and update.callback_query:
+                    try:
+                        bot.answer_callback_query(
+                            update.callback_query.id, 
+                            "Извините, произошла ошибка. Пожалуйста, попробуйте ещё раз."
+                        )
+                    except:
+                        pass
         except:
             pass
+        return False
+
+def safe_answer_callback(callback_id, text, show_alert=False):
+    """Безопасный ответ на callback-запрос с обработкой ошибок"""
+    try:
+        bot.answer_callback_query(callback_id, text, show_alert=show_alert)
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при ответе на callback {callback_id}: {e}")
+        return False
 
 bot.process_new_updates = safe_process_new_updates
 
@@ -2302,6 +2331,35 @@ def setup_webhook(url, retry_count=0, max_retries=5):
             logger.error(f"Ошибка при установке вебхука: {e}")
             logger.error(f"Используемый URL вебхука: {url}")
 
+def check_and_restore_webhook():
+    """Проверяет текущий статус вебхука и восстанавливает его, если он не установлен"""
+    try:
+        info = bot.get_webhook_info()
+        logger.info(f"Текущий статус вебхука: URL={info.url}, pending_updates={info.pending_update_count}")
+        
+        # Если вебхук не установлен, устанавливаем его
+        if not info.url:
+            logger.warning("Вебхук не установлен, устанавливаю вручную...")
+            # Получаем хост из переменных окружения
+            host = os.environ.get('WEBHOOK_HOST', os.environ.get('RENDER_EXTERNAL_URL', ''))
+            path = os.environ.get('WEBHOOK_PATH', f'/webhook/{bot.token}')
+            if host:
+                # Убираем trailing slash если есть
+                if host.endswith('/'):
+                    host = host[:-1]
+                
+                url = f"{host}{path}"
+                logger.info(f"Попытка автоматической установки вебхука на URL: {url}")
+                setup_webhook(url)
+                return True
+            else:
+                logger.error("Не удалось восстановить вебхук: не найдена переменная WEBHOOK_HOST или RENDER_EXTERNAL_URL")
+                return False
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при проверке/восстановлении вебхука: {e}")
+        return False
+
 if __name__ == "__main__":
     try:
         # Инициализируем БД
@@ -2399,6 +2457,13 @@ if __name__ == "__main__":
                 keep_alive_thread = start_keep_alive_thread()
                 logger.info("Запущен поток keep-alive для Render")
                 
+                # Проверяем и восстанавливаем вебхук, если он не установлен
+                webhook_status = check_and_restore_webhook()
+                if webhook_status:
+                    logger.info("Проверка вебхука успешно выполнена")
+                else:
+                    logger.warning("Проверка вебхука выполнена с ошибками, продолжаем инициализацию")
+            
             # Режим webhook - для хостинга
             import flask
             from flask import Flask, request
@@ -2448,12 +2513,35 @@ if __name__ == "__main__":
             
             @app.route(WEBHOOK_PATH, methods=['POST'])
             def webhook():
+                logger.info("Получен webhook-запрос от Telegram")
                 if request.headers.get('content-type') == 'application/json':
                     json_string = request.get_data().decode('utf-8')
-                    update = telebot.types.Update.de_json(json_string)
-                    bot.process_new_updates([update])
-                    return ''
+                    logger.info(f"Содержимое webhook-запроса: {json_string[:100]}...")
+                    try:
+                        update = telebot.types.Update.de_json(json_string)
+                        
+                        # Дополнительное логирование типа обновления для отладки
+                        if hasattr(update, 'callback_query') and update.callback_query:
+                            logger.info(f"Получен callback_query с data: {update.callback_query.data}")
+                        elif hasattr(update, 'message') and update.message:
+                            logger.info(f"Получено сообщение типа: {update.message.content_type}")
+                        
+                        # Безопасная обработка обновлений
+                        try:
+                            bot.process_new_updates([update])
+                            logger.info(f"Обработано обновление типа: {update.message.content_type if hasattr(update, 'message') and update.message else 'не сообщение'}")
+                        except Exception as e:
+                            logger.error(f"Ошибка при обработке обновления: {e}")
+                            # Восстанавливаем middleware после ошибки
+                            if hasattr(bot, 'middleware_handler'):
+                                bot.middleware_handler.process_update([update])
+                        
+                        return ''
+                    except Exception as e:
+                        logger.error(f"Ошибка при обработке webhook-запроса: {e}")
+                        return 'Ошибка при обработке: ' + str(e), 500
                 else:
+                    logger.warning(f"Получен webhook-запрос с неверным content-type: {request.headers.get('content-type')}")
                     return 'Ошибка: не JSON', 403
             
             @app.route('/')
