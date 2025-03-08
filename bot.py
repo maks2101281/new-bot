@@ -14,6 +14,7 @@ import atexit
 from dotenv import load_dotenv
 import signal
 import traceback
+from keep_alive import start_keep_alive_thread
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -35,7 +36,8 @@ class UserStates:
     WAITING_TOURNAMENT_TIME = 'waiting_tournament_time'
 
 # Инициализация бота
-bot = telebot.TeleBot('8104692415:AAEFJiYdW85sXaAa4PFd-uOEcJZIBQfd31Q')
+token = os.environ.get('TOKEN', '8104692415:AAEFJiYdW85sXaAa4PFd-uOEcJZIBQfd31Q')
+bot = telebot.TeleBot(token)
 
 # Словари для хранения данных пользователей
 user_states = {}
@@ -2264,6 +2266,42 @@ def signal_handler(signal, frame):
 # Регистрация обработчика сигналов
 signal.signal(signal.SIGINT, signal_handler)
 
+def setup_webhook(url, retry_count=0, max_retries=5):
+    try:
+        # Проверяем текущий вебхук перед установкой нового
+        try:
+            info = bot.get_webhook_info()
+            current_url = info.url
+            
+            # Если вебхук уже установлен на нужный URL, не переустанавливаем его
+            if current_url == url:
+                logger.info(f"Вебхук уже установлен на {url}")
+                return
+        except Exception as e:
+            logger.warning(f"Не удалось получить информацию о текущем вебхуке: {e}")
+            
+        # Только если URL изменился или не удалось получить информацию
+        bot.remove_webhook()
+        time.sleep(1)  # Ждем 1 секунду перед установкой
+        bot.set_webhook(url=url)
+        logger.info("Вебхук успешно установлен")
+    except Exception as e:
+        if "Too Many Requests" in str(e) and retry_count < max_retries:
+            retry_after = 1
+            # Извлекаем значение retry_after из сообщения об ошибке, если оно есть
+            if "retry after" in str(e):
+                try:
+                    retry_after = int(str(e).split("retry after ")[1])
+                except:
+                    retry_after = (retry_count + 1) * 2  # Экспоненциальная задержка
+            
+            logger.info(f"Превышен лимит запросов, повторная попытка через {retry_after} секунд...")
+            time.sleep(retry_after)
+            setup_webhook(url, retry_count + 1, max_retries)
+        else:
+            logger.error(f"Ошибка при установке вебхука: {e}")
+            logger.error(f"Используемый URL вебхука: {url}")
+
 if __name__ == "__main__":
     try:
         # Инициализируем БД
@@ -2338,10 +2376,9 @@ if __name__ == "__main__":
                 bot.remove_webhook()
                 time.sleep(0.2)  # Небольшая задержка для обработки запроса
                 
-                # Устанавливаем новый вебхук
+                # Устанавливаем новый вебхук используя функцию с повторными попытками
                 logger.info(f"Устанавливаем вебхук на URL: {WEBHOOK_URL}")
-                bot.set_webhook(url=WEBHOOK_URL)
-                logger.info("Вебхук успешно установлен")
+                setup_webhook(WEBHOOK_URL)
             except Exception as e:
                 logger.error(f"Ошибка при установке вебхука: {e}")
                 logger.error(f"Используемый URL вебхука: {WEBHOOK_URL}")
@@ -2350,12 +2387,18 @@ if __name__ == "__main__":
         IS_HEROKU = os.environ.get('DYNO') is not None
         IS_PYTHONANYWHERE = 'PYTHONANYWHERE_DOMAIN' in os.environ
         IS_RAILWAY = 'RAILWAY_STATIC_URL' in os.environ
+        IS_RENDER = 'RENDER_EXTERNAL_URL' in os.environ
         
         # Переменная окружения для определения режима (webhook/polling)
         USE_WEBHOOK = os.environ.get('USE_WEBHOOK', 'False').lower() in ('true', '1', 't')
         
         # Проверяем, нужно ли использовать webhook
-        if USE_WEBHOOK or IS_HEROKU or IS_PYTHONANYWHERE or IS_RAILWAY:
+        if USE_WEBHOOK or IS_HEROKU or IS_PYTHONANYWHERE or IS_RAILWAY or IS_RENDER:
+            # Если на Render, запускаем поток keep-alive
+            if IS_RENDER:
+                keep_alive_thread = start_keep_alive_thread()
+                logger.info("Запущен поток keep-alive для Render")
+                
             # Режим webhook - для хостинга
             import flask
             from flask import Flask, request
@@ -2373,6 +2416,10 @@ if __name__ == "__main__":
                     WEBHOOK_HOST = f"https://{WEBHOOK_HOST}"
                 
                 logger.info(f"Railway host: {WEBHOOK_HOST}")
+            elif IS_RENDER:
+                # Для Render используем переменную окружения RENDER_EXTERNAL_URL
+                WEBHOOK_HOST = os.environ.get('RENDER_EXTERNAL_URL', '')
+                logger.info(f"Render host: {WEBHOOK_HOST}")
             else:
                 WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', 'https://your-app-name.herokuapp.com')
             
@@ -2392,8 +2439,7 @@ if __name__ == "__main__":
             try:
                 # Устанавливаем вебхук с подробными логами
                 logger.info(f"Устанавливаем вебхук на URL: {WEBHOOK_URL}")
-                bot.set_webhook(url=WEBHOOK_URL)
-                logger.info("Вебхук успешно установлен")
+                setup_webhook(WEBHOOK_URL)
             except Exception as e:
                 logger.error(f"Ошибка при установке вебхука: {e}")
                 logger.error(f"Используемый URL вебхука: {WEBHOOK_URL}")
