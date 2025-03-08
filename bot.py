@@ -2299,20 +2299,52 @@ if __name__ == "__main__":
             WEBHOOK_PORT = int(os.environ.get('PORT', 5000))
             WEBHOOK_PATH = os.environ.get('WEBHOOK_PATH', f'/webhook/{bot.token}')
             
+            # Формируем URL вебхука в зависимости от платформы
             if os.environ.get('RENDER_EXTERNAL_URL'):
-                WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL') + WEBHOOK_PATH
+                render_url = os.environ.get('RENDER_EXTERNAL_URL')
+                # Убедимся, что URL начинается с https://
+                if not render_url.startswith('http'):
+                    render_url = f"https://{render_url}"
+                
+                WEBHOOK_URL = render_url + WEBHOOK_PATH
                 logger.info(f"Используем URL Render: {WEBHOOK_URL}")
+            elif os.environ.get('RAILWAY_PUBLIC_DOMAIN') or os.environ.get('RAILWAY_STATIC_URL'):
+                # Для Railway также обрабатываем специальные переменные
+                railway_url = os.environ.get('RAILWAY_PUBLIC_DOMAIN', '') or os.environ.get('RAILWAY_STATIC_URL', '')
+                if not railway_url.startswith('http'):
+                    railway_url = f"https://{railway_url}"
+                
+                WEBHOOK_URL = railway_url + WEBHOOK_PATH
+                logger.info(f"Используем URL Railway: {WEBHOOK_URL}")
             else:
+                # Для локального тестирования или других платформ
+                if not WEBHOOK_HOST:
+                    logger.warning("WEBHOOK_HOST не определен, используем localhost для тестирования")
+                    WEBHOOK_HOST = f"https://example.com"
+                
                 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+                logger.info(f"Используем стандартный URL: {WEBHOOK_URL}")
             
-            # Настройка Flask
-            app = Flask(__name__)
+            # Дополнительные проверки URL вебхука
+            if not WEBHOOK_URL.startswith('https://'):
+                logger.error(f"URL вебхука должен начинаться с https://: {WEBHOOK_URL}")
+                WEBHOOK_URL = f"https://{WEBHOOK_URL.replace('http://', '')}"
+                logger.info(f"Исправленный URL вебхука: {WEBHOOK_URL}")
+            
             logger.info(f"Бот запущен в режиме webhook на {WEBHOOK_URL}")
             
-            # Удаляем старый вебхук и устанавливаем новый
-            bot.remove_webhook()
-            time.sleep(0.1)
-            bot.set_webhook(url=WEBHOOK_URL)
+            try:
+                # Удаляем существующий вебхук
+                bot.remove_webhook()
+                time.sleep(0.2)  # Небольшая задержка для обработки запроса
+                
+                # Устанавливаем новый вебхук
+                logger.info(f"Устанавливаем вебхук на URL: {WEBHOOK_URL}")
+                bot.set_webhook(url=WEBHOOK_URL)
+                logger.info("Вебхук успешно установлен")
+            except Exception as e:
+                logger.error(f"Ошибка при установке вебхука: {e}")
+                logger.error(f"Используемый URL вебхука: {WEBHOOK_URL}")
         
         # Проверяем, запущен ли бот на хостинге
         IS_HEROKU = os.environ.get('DYNO') is not None
@@ -2330,14 +2362,43 @@ if __name__ == "__main__":
             app = Flask(__name__)
             
             # URL для webhook должен соответствовать URL вашего приложения
-            WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', 'https://your-app-name.herokuapp.com')
+            if IS_RAILWAY:
+                # Для Railway используем специфичную переменную окружения
+                WEBHOOK_HOST = os.environ.get('RAILWAY_PUBLIC_DOMAIN', '')
+                if not WEBHOOK_HOST:
+                    WEBHOOK_HOST = os.environ.get('RAILWAY_STATIC_URL', '')
+                
+                # Убедимся, что URL начинается с https://
+                if WEBHOOK_HOST and not WEBHOOK_HOST.startswith('http'):
+                    WEBHOOK_HOST = f"https://{WEBHOOK_HOST}"
+                
+                logger.info(f"Railway host: {WEBHOOK_HOST}")
+            else:
+                WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', 'https://your-app-name.herokuapp.com')
+            
             WEBHOOK_PATH = os.environ.get('WEBHOOK_PATH', f'/webhook/{bot.token}')
-            WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+            
+            # Формируем полный URL вебхука
+            if WEBHOOK_HOST:
+                WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+                logger.info(f"Формируем URL вебхука: {WEBHOOK_URL}")
+            else:
+                logger.error("WEBHOOK_HOST не определен, вебхук не будет работать!")
+                WEBHOOK_URL = f"https://example.com{WEBHOOK_PATH}"
             
             # Настройка webhook
             bot.remove_webhook()
-            time.sleep(0.1)
-            bot.set_webhook(url=WEBHOOK_URL)
+            
+            try:
+                # Устанавливаем вебхук с подробными логами
+                logger.info(f"Устанавливаем вебхук на URL: {WEBHOOK_URL}")
+                bot.set_webhook(url=WEBHOOK_URL)
+                logger.info("Вебхук успешно установлен")
+            except Exception as e:
+                logger.error(f"Ошибка при установке вебхука: {e}")
+                logger.error(f"Используемый URL вебхука: {WEBHOOK_URL}")
+                # Продолжим выполнение, чтобы хотя бы сервер запустился
+                pass
             
             @app.route(WEBHOOK_PATH, methods=['POST'])
             def webhook():
